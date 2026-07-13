@@ -115,10 +115,13 @@ def main() -> None:
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # תזמון יומי בשעה קבועה
+    # תזמון יומי בשעה קבועה עם הגדרת אזור זמן של ישראל
+    import pytz
+    local_tz = pytz.timezone(TIMEZONE)
+    
     app.job_queue.run_daily(
         send_daily_poll,
-        time=__import__("datetime").time(hour=SEND_HOUR, minute=SEND_MINUTE),
+        time=__import__("datetime").time(hour=SEND_HOUR, minute=SEND_MINUTE, tzinfo=local_tz),
     )
 
     logger.info("Bot started. Daily poll scheduled at %02d:%02d (%s).", SEND_HOUR, SEND_MINUTE, TIMEZONE)
@@ -127,3 +130,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
