@@ -1,16 +1,19 @@
-
 # -*- coding: utf-8 -*-
 """
-בוט טלגרם ששולח סקר יומיומי לקבוצה - בשעה קבועה, כל יום, לפי אזור הזמן שהוגדר.
+בוט טלגרם ששולח סקר יומיומי לקבוצה - בשעה קבועה, כל יום.
+חצי מהזמן שולף שאלה מרשימה קבועה (topics.py), חצי מהזמן מבקש מ-Claude
+לחדש שאלה. שומר קובץ used_topics.json כדי לא לחזור על אותה שאלה קבועה
+פעמיים ברצף עד שעברנו על כל הרשימה.
+
+הפעלה:
+    python bot.py
 """
 
 import os
 import json
 import random
 import logging
-import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from telegram.ext import Application, ContextTypes
 from dotenv import load_dotenv
@@ -20,11 +23,11 @@ from topics import FIXED_POLLS
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-SEND_HOUR = int(os.getenv("SEND_HOUR", "9"))
+CHAT_ID = os.getenv("CHAT_ID")  # ה-ID של הקבוצה (יכול להיות שלילי, למשל -1001234567890)
+SEND_HOUR = int(os.getenv("SEND_HOUR", "9"))    # שעה לשליחה (24h)
 SEND_MINUTE = int(os.getenv("SEND_MINUTE", "0"))
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Jerusalem")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")  # אופציונלי - בלי זה ישתמש רק ברשימה הקבועה
 
 USED_FILE = Path(__file__).parent / "used_topics.json"
 
@@ -43,6 +46,7 @@ def _save_used(used: list) -> None:
 
 
 def get_fixed_poll() -> tuple:
+    """מחזיר שאלה קבועה שעוד לא נשאלה (ומתחיל סבב חדש כשהרשימה נגמרת)."""
     used = _load_used()
     remaining = [p for p in FIXED_POLLS if p[0] not in used]
     if not remaining:
@@ -55,6 +59,7 @@ def get_fixed_poll() -> tuple:
 
 
 def get_ai_poll() -> tuple | None:
+    """מבקש מ-Claude שאלת סקר יומיומית וקלילה, מחזיר (שאלה, אפשרויות) או None אם נכשל."""
     if not ANTHROPIC_API_KEY:
         return None
     try:
@@ -84,6 +89,7 @@ def get_ai_poll() -> tuple | None:
 
 
 def get_daily_poll() -> tuple:
+    """שילוב: ~50% AI (אם מוגדר מפתח), ~50% מהרשימה הקבועה."""
     if ANTHROPIC_API_KEY and random.random() < 0.5:
         ai_result = get_ai_poll()
         if ai_result:
@@ -97,7 +103,7 @@ async def send_daily_poll(context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id=CHAT_ID,
         question=f"📊 סקר היום: {question}",
         options=options,
-        is_anonymous=False,
+        is_anonymous=False,   # שינוי ל-True אם רוצים סקר אנונימי
         allows_multiple_answers=False,
     )
     logger.info("Poll sent: %s", question)
@@ -109,9 +115,10 @@ def main() -> None:
 
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # תזמון יומי בשעה קבועה
     app.job_queue.run_daily(
         send_daily_poll,
-        time=datetime.time(hour=SEND_HOUR, minute=SEND_MINUTE, tzinfo=ZoneInfo(TIMEZONE)),
+        time=__import__("datetime").time(hour=SEND_HOUR, minute=SEND_MINUTE),
     )
 
     logger.info("Bot started. Daily poll scheduled at %02d:%02d (%s).", SEND_HOUR, SEND_MINUTE, TIMEZONE)
