@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-בוט טלגרם ששולח סקר יומיומי לקבוצה - בשעה קבועה, כל יום, לפי אזור הזמן שהוגדר.
+בוט טלגרם ששולח כל יום, בשעה קבועה, אחד מבין: סקר קבוע, חידון קבוע,
+או שאלה שנוצרת ע"י Claude (אופציונלי) - הכל לפי אזור זמן נכון.
 """
 
 import os
@@ -11,10 +12,11 @@ import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from telegram import Poll
 from telegram.ext import Application, ContextTypes
 from dotenv import load_dotenv
 
-from topics import FIXED_POLLS
+from topics import FIXED_POLLS, QUIZ_POLLS
 
 load_dotenv()
 
@@ -25,35 +27,48 @@ SEND_MINUTE = int(os.getenv("SEND_MINUTE", "0"))
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Jerusalem")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-USED_FILE = Path(__file__).parent / "used_topics.json"
+USED_POLLS_FILE = Path(__file__).parent / "used_topics.json"
+USED_QUIZZES_FILE = Path(__file__).parent / "used_quizzes.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
-def _load_used() -> list:
-    if USED_FILE.exists():
-        return json.loads(USED_FILE.read_text(encoding="utf-8"))
+def _load_used(path: Path) -> list:
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
     return []
 
 
-def _save_used(used: list) -> None:
-    USED_FILE.write_text(json.dumps(used, ensure_ascii=False), encoding="utf-8")
+def _save_used(path: Path, used: list) -> None:
+    path.write_text(json.dumps(used, ensure_ascii=False), encoding="utf-8")
 
 
-def get_fixed_poll() -> tuple:
-    used = _load_used()
+def get_fixed_poll() -> dict:
+    used = _load_used(USED_POLLS_FILE)
     remaining = [p for p in FIXED_POLLS if p[0] not in used]
     if not remaining:
         used = []
         remaining = FIXED_POLLS
     question, options = random.choice(remaining)
     used.append(question)
-    _save_used(used)
-    return question, options
+    _save_used(USED_POLLS_FILE, used)
+    return {"question": question, "options": options, "is_quiz": False}
 
 
-def get_ai_poll() -> tuple | None:
+def get_quiz_poll() -> dict:
+    used = _load_used(USED_QUIZZES_FILE)
+    remaining = [q for q in QUIZ_POLLS if q[0] not in used]
+    if not remaining:
+        used = []
+        remaining = QUIZ_POLLS
+    question, options, correct_index = random.choice(remaining)
+    used.append(question)
+    _save_used(USED_QUIZZES_FILE, used)
+    return {"question": question, "options": options, "is_quiz": True, "correct_index": correct_index}
+
+
+def get_ai_poll() -> dict | None:
     if not ANTHROPIC_API_KEY:
         return None
     try:
@@ -76,30 +91,45 @@ def get_ai_poll() -> tuple | None:
         text = msg.content[0].text.strip()
         text = text.replace("```json", "").replace("```", "").strip()
         data = json.loads(text)
-        return data["question"], data["options"]
+        return {"question": data["question"], "options": data["options"], "is_quiz": False}
     except Exception as e:
         logger.warning("AI poll generation failed, falling back to fixed list: %s", e)
         return None
 
 
-def get_daily_poll() -> tuple:
-    if ANTHROPIC_API_KEY and random.random() < 0.5:
+def get_daily_poll() -> dict:
+    roll = random.random()
+
+    if roll < 0.20:
+        return get_quiz_poll()
+
+    if ANTHROPIC_API_KEY and roll < 0.60:
         ai_result = get_ai_poll()
         if ai_result:
             return ai_result
+
     return get_fixed_poll()
 
 
 async def send_daily_poll(context: ContextTypes.DEFAULT_TYPE) -> None:
-    question, options = get_daily_poll()
-    await context.bot.send_poll(
+    item = get_daily_poll()
+
+    kwargs = dict(
         chat_id=CHAT_ID,
-        question=f"📊 סקר היום: {question}",
-        options=options,
+        options=item["options"],
         is_anonymous=False,
         allows_multiple_answers=False,
     )
-    logger.info("Poll sent: %s", question)
+
+    if item["is_quiz"]:
+        kwargs["question"] = f"🧠 חידון היום: {item['question']}"
+        kwargs["type"] = Poll.QUIZ
+        kwargs["correct_option_id"] = item["correct_index"]
+    else:
+        kwargs["question"] = f"📊 סקר היום: {item['question']}"
+
+    await context.bot.send_poll(**kwargs)
+    logger.info("Sent %s: %s", "quiz" if item["is_quiz"] else "poll", item["question"])
 
 
 def main() -> None:
@@ -113,7 +143,7 @@ def main() -> None:
         time=datetime.time(hour=SEND_HOUR, minute=SEND_MINUTE, tzinfo=ZoneInfo(TIMEZONE)),
     )
 
-    logger.info("Bot started. Daily poll scheduled at %02d:%02d (%s).", SEND_HOUR, SEND_MINUTE, TIMEZONE)
+    logger.info("Bot started. Daily send scheduled at %02d:%02d (%s).", SEND_HOUR, SEND_MINUTE, TIMEZONE)
     app.run_polling()
 
 
